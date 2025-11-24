@@ -25,10 +25,10 @@ func info() BattlesnakeInfoResponse {
 
 	return BattlesnakeInfoResponse{
 		APIVersion: "1",
-		Author:     "",        // TODO: Your Battlesnake username
-		Color:      "#888888", // TODO: Choose color
-		Head:       "default", // TODO: Choose head
-		Tail:       "default", // TODO: Choose tail
+		Author:     "AbdullaQeblawi",
+		Color:      "#DC143C", // Crimson red - aggressive
+		Head:       "evil",    // Evil eyes for intimidation
+		Tail:       "bolt",    // Lightning bolt tail
 	}
 }
 
@@ -71,15 +71,61 @@ func move(state GameState) BattlesnakeMoveResponse {
 		isMoveSafe["up"] = false
 	}
 
-	// TODO: Step 1 - Prevent your Battlesnake from moving out of bounds
-	// boardWidth := state.Board.Width
-	// boardHeight := state.Board.Height
+	// Step 1 - Prevent your Battlesnake from moving out of bounds
+	boardWidth := state.Board.Width
+	boardHeight := state.Board.Height
 
-	// TODO: Step 2 - Prevent your Battlesnake from colliding with itself
-	// mybody := state.You.Body
+	if myHead.X == 0 {
+		isMoveSafe["left"] = false
+	}
+	if myHead.X == boardWidth-1 {
+		isMoveSafe["right"] = false
+	}
+	if myHead.Y == 0 {
+		isMoveSafe["down"] = false
+	}
+	if myHead.Y == boardHeight-1 {
+		isMoveSafe["up"] = false
+	}
 
-	// TODO: Step 3 - Prevent your Battlesnake from colliding with other Battlesnakes
-	// opponents := state.Board.Snakes
+	// Step 2 - Prevent your Battlesnake from colliding with itself
+	myBody := state.You.Body
+	for _, segment := range myBody {
+		if myHead.X-1 == segment.X && myHead.Y == segment.Y {
+			isMoveSafe["left"] = false
+		}
+		if myHead.X+1 == segment.X && myHead.Y == segment.Y {
+			isMoveSafe["right"] = false
+		}
+		if myHead.Y-1 == segment.Y && myHead.X == segment.X {
+			isMoveSafe["down"] = false
+		}
+		if myHead.Y+1 == segment.Y && myHead.X == segment.X {
+			isMoveSafe["up"] = false
+		}
+	}
+
+	// Step 3 - Prevent your Battlesnake from colliding with other Battlesnakes
+	opponents := state.Board.Snakes
+	for _, snake := range opponents {
+		if snake.ID == state.You.ID {
+			continue // Skip our own snake, already handled above
+		}
+		for _, segment := range snake.Body {
+			if myHead.X-1 == segment.X && myHead.Y == segment.Y {
+				isMoveSafe["left"] = false
+			}
+			if myHead.X+1 == segment.X && myHead.Y == segment.Y {
+				isMoveSafe["right"] = false
+			}
+			if myHead.Y-1 == segment.Y && myHead.X == segment.X {
+				isMoveSafe["down"] = false
+			}
+			if myHead.Y+1 == segment.Y && myHead.X == segment.X {
+				isMoveSafe["up"] = false
+			}
+		}
+	}
 
 	// Are there any safe moves left?
 	safeMoves := []string{}
