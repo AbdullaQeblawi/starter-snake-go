@@ -61,6 +61,122 @@ func scoreFoodSafety(food Coord, myHead Coord, boardWidth, boardHeight int, oppo
 	return score
 }
 
+// Helper function to get the coordinate for a move direction
+func getCoordFromMove(head Coord, move string) Coord {
+	next := head
+	switch move {
+	case "up":
+		next.Y += 1
+	case "down":
+		next.Y -= 1
+	case "left":
+		next.X -= 1
+	case "right":
+		next.X += 1
+	}
+	return next
+}
+
+// Helper function to score aggressive moves (higher is better)
+func scoreAggressiveMove(nextPos Coord, myLength int, opponents []Battlesnake, myTail Coord, food []Coord, boardWidth, boardHeight int) int {
+	score := 0
+
+	// For each opponent, check if we can win a head-to-head
+	for _, snake := range opponents {
+		enemyHead := snake.Head
+
+		// Check if enemy could move to same position (head-to-head)
+		distance := manhattanDistance(nextPos, enemyHead)
+
+		if distance == 1 {
+			// We're adjacent to enemy head - potential head-to-head next turn
+			if myLength > snake.Length {
+				// We're bigger - be aggressive!
+				score += 50
+			} else if myLength == snake.Length {
+				// Equal size - be cautious but slightly aggressive
+				score += 10
+			} else {
+				// We're smaller - this is already handled by collision avoidance
+				score -= 30
+			}
+		} else if distance == 2 {
+			// Enemy is 2 moves away - position for potential confrontation
+			if myLength > snake.Length {
+				score += 20
+			}
+		}
+
+		// Space control: Cut off opponent from food
+		if len(food) > 0 && myLength >= snake.Length {
+			// Find nearest food to enemy
+			nearestFoodToEnemy := food[0]
+			minDist := manhattanDistance(enemyHead, food[0])
+			for _, f := range food {
+				dist := manhattanDistance(enemyHead, f)
+				if dist < minDist {
+					minDist = dist
+					nearestFoodToEnemy = f
+				}
+			}
+
+			// Check if we're moving between enemy and their food
+			distEnemyToFood := manhattanDistance(enemyHead, nearestFoodToEnemy)
+			distNextPosToFood := manhattanDistance(nextPos, nearestFoodToEnemy)
+			distEnemyToNextPos := manhattanDistance(enemyHead, nextPos)
+
+			// If we're getting between enemy and food, bonus!
+			if distNextPosToFood < distEnemyToFood && distEnemyToNextPos < distEnemyToFood {
+				score += 30 // Cut them off!
+			}
+		}
+
+		// Space control: Push enemy toward walls
+		enemyDistFromWalls := 0
+		if enemyHead.X <= 1 || enemyHead.X >= boardWidth-2 {
+			enemyDistFromWalls++
+		}
+		if enemyHead.Y <= 1 || enemyHead.Y >= boardHeight-2 {
+			enemyDistFromWalls++
+		}
+
+		// If enemy is near wall and we're moving closer, bonus
+		if enemyDistFromWalls > 0 && distance <= 3 && myLength >= snake.Length {
+			score += 15 * enemyDistFromWalls // Push them into danger!
+		}
+	}
+
+	// Tail chasing for safe space control
+	tailDistance := manhattanDistance(nextPos, myTail)
+
+	// Check if there are any close threats
+	hasCloseThreats := false
+	for _, snake := range opponents {
+		if manhattanDistance(nextPos, snake.Head) < 4 {
+			hasCloseThreats = true
+			break
+		}
+	}
+
+	// When no close threats, strongly prefer following tail to avoid self-trap
+	if !hasCloseThreats {
+		if tailDistance == 1 {
+			score += 40 // Very close to tail - great for territory control
+		} else if tailDistance == 2 {
+			score += 25
+		} else if tailDistance == 3 {
+			score += 15
+		}
+	} else {
+		// With threats nearby, still follow tail but less strongly
+		if tailDistance < 3 {
+			score += 10
+		}
+	}
+
+	return score
+}
+
 // info is called when you create your Battlesnake on play.battlesnake.com
 // and controls your Battlesnake's appearance
 // TIP: If you open your Battlesnake URL in a browser you should see this data
@@ -261,9 +377,42 @@ func move(state GameState) BattlesnakeMoveResponse {
 			nextMove = bestMoves[rand.Intn(len(bestMoves))]
 		}
 	} else {
-		// Health is high or no food available - choose safe move strategically
-		// For now, just pick a random safe move (Phase 3 will add territory control)
-		nextMove = safeMoves[rand.Intn(len(safeMoves))]
+		// Health is high or no food available - BE AGGRESSIVE!
+		myLength := state.You.Length
+		myTail := state.You.Body[len(state.You.Body)-1]
+
+		// Score each safe move based on aggression
+		type ScoredMove struct {
+			move  string
+			score int
+		}
+		scoredMoves := []ScoredMove{}
+
+		for _, move := range safeMoves {
+			nextPos := getCoordFromMove(myHead, move)
+			aggressionScore := scoreAggressiveMove(nextPos, myLength, opponents, myTail, food, boardWidth, boardHeight)
+			scoredMoves = append(scoredMoves, ScoredMove{move: move, score: aggressionScore})
+		}
+
+		// Find moves with highest aggression score
+		bestMoves := []string{}
+		bestAggressionScore := -999999
+
+		for _, sm := range scoredMoves {
+			if sm.score > bestAggressionScore {
+				bestAggressionScore = sm.score
+				bestMoves = []string{sm.move}
+			} else if sm.score == bestAggressionScore {
+				bestMoves = append(bestMoves, sm.move)
+			}
+		}
+
+		// Choose randomly among most aggressive moves
+		if len(bestMoves) > 0 {
+			nextMove = bestMoves[rand.Intn(len(bestMoves))]
+		} else {
+			nextMove = safeMoves[rand.Intn(len(safeMoves))]
+		}
 	}
 
 	log.Printf("MOVE %d: %s (Health: %d)\n", state.Turn, nextMove, myHealth)
