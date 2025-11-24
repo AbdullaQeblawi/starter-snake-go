@@ -77,6 +77,93 @@ func getCoordFromMove(head Coord, move string) Coord {
 	return next
 }
 
+// Flood fill algorithm to calculate reachable space from a position
+func floodFill(start Coord, boardWidth, boardHeight int, allSnakes []Battlesnake) int {
+	// Create a visited map
+	visited := make(map[Coord]bool)
+
+	// Create occupied map (all snake bodies)
+	occupied := make(map[Coord]bool)
+	for _, snake := range allSnakes {
+		for i, segment := range snake.Body {
+			// Don't mark tails as occupied if snake just ate (tail won't move)
+			// For simplicity, mark all segments except the very last tail segment
+			if i < len(snake.Body)-1 {
+				occupied[segment] = true
+			}
+		}
+	}
+
+	// BFS to count reachable cells
+	queue := []Coord{start}
+	visited[start] = true
+	count := 0
+
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		count++
+
+		// Check all 4 directions
+		directions := []Coord{
+			{X: current.X, Y: current.Y + 1},     // up
+			{X: current.X, Y: current.Y - 1},     // down
+			{X: current.X - 1, Y: current.Y},     // left
+			{X: current.X + 1, Y: current.Y},     // right
+		}
+
+		for _, next := range directions {
+			// Check bounds
+			if next.X < 0 || next.X >= boardWidth || next.Y < 0 || next.Y >= boardHeight {
+				continue
+			}
+
+			// Check if already visited or occupied
+			if visited[next] || occupied[next] {
+				continue
+			}
+
+			visited[next] = true
+			queue = append(queue, next)
+		}
+	}
+
+	return count
+}
+
+// Predict possible next positions for an opponent's head
+func predictOpponentMoves(snake Battlesnake, boardWidth, boardHeight int) []Coord {
+	possibleMoves := []Coord{}
+	head := snake.Head
+
+	// All possible moves
+	candidates := []Coord{
+		{X: head.X, Y: head.Y + 1},     // up
+		{X: head.X, Y: head.Y - 1},     // down
+		{X: head.X - 1, Y: head.Y},     // left
+		{X: head.X + 1, Y: head.Y},     // right
+	}
+
+	for _, pos := range candidates {
+		// Check bounds
+		if pos.X < 0 || pos.X >= boardWidth || pos.Y < 0 || pos.Y >= boardHeight {
+			continue
+		}
+
+		// Enemy probably won't move into their own neck (backwards)
+		if len(snake.Body) > 1 {
+			neck := snake.Body[1]
+			if pos.X == neck.X && pos.Y == neck.Y {
+				continue
+			}
+		}
+
+		possibleMoves = append(possibleMoves, pos)
+	}
+
+	return possibleMoves
+}
+
 // Helper function to score aggressive moves (higher is better)
 func scoreAggressiveMove(nextPos Coord, myLength int, opponents []Battlesnake, myTail Coord, food []Coord, boardWidth, boardHeight int) int {
 	score := 0
@@ -285,6 +372,27 @@ func move(state GameState) BattlesnakeMoveResponse {
 				isMoveSafe["up"] = false
 			}
 		}
+
+		// Step 3.5 - Avoid potential head-to-head collisions (unless we're larger)
+		possibleEnemyMoves := predictOpponentMoves(snake, boardWidth, boardHeight)
+		for _, enemyNextPos := range possibleEnemyMoves {
+			// Only avoid if we're smaller or equal size (unless we want to be aggressive)
+			if state.You.Length <= snake.Length {
+				// Enemy might move here, so avoid it
+				if myHead.X-1 == enemyNextPos.X && myHead.Y == enemyNextPos.Y {
+					isMoveSafe["left"] = false
+				}
+				if myHead.X+1 == enemyNextPos.X && myHead.Y == enemyNextPos.Y {
+					isMoveSafe["right"] = false
+				}
+				if myHead.Y-1 == enemyNextPos.Y && myHead.X == enemyNextPos.X {
+					isMoveSafe["down"] = false
+				}
+				if myHead.Y+1 == enemyNextPos.Y && myHead.X == enemyNextPos.X {
+					isMoveSafe["up"] = false
+				}
+			}
+		}
 	}
 
 	// Are there any safe moves left?
@@ -343,32 +451,60 @@ func move(state GameState) BattlesnakeMoveResponse {
 
 		nearestFood := bestFood
 
-		// Score each safe move based on distance to nearest food
-		bestMoves := []string{}
-		bestDistance := 999999
+		// Score each safe move based on distance to nearest food AND available space
+		type FoodMove struct {
+			move  string
+			score int
+		}
+		foodMoves := []FoodMove{}
+		allSnakes := state.Board.Snakes
 
 		for _, move := range safeMoves {
-			// Calculate where this move would take us
-			nextHead := myHead
-			switch move {
-			case "up":
-				nextHead.Y += 1
-			case "down":
-				nextHead.Y -= 1
-			case "left":
-				nextHead.X -= 1
-			case "right":
-				nextHead.X += 1
-			}
+			nextHead := getCoordFromMove(myHead, move)
 
 			// Calculate distance from new position to food
 			distance := manhattanDistance(nextHead, nearestFood)
+			foodScore := -distance // Negative distance (closer is better)
 
-			if distance < bestDistance {
-				bestDistance = distance
-				bestMoves = []string{move}
-			} else if distance == bestDistance {
-				bestMoves = append(bestMoves, move)
+			// Calculate available space - critical even when seeking food!
+			spaceAvailable := floodFill(nextHead, boardWidth, boardHeight, allSnakes)
+			minSpaceNeeded := state.You.Length + 3
+
+			spaceScore := 0
+			if needsFoodUrgently {
+				// When desperate, take more risk but still avoid death traps
+				if spaceAvailable < state.You.Length {
+					spaceScore = -100 // Definite death trap
+				} else {
+					spaceScore = 0 // Take the risk
+				}
+			} else {
+				// When not desperate, be more careful about space
+				if spaceAvailable >= minSpaceNeeded*2 {
+					spaceScore = 50
+				} else if spaceAvailable >= minSpaceNeeded {
+					spaceScore = 20
+				} else if spaceAvailable >= state.You.Length {
+					spaceScore = -30
+				} else {
+					spaceScore = -150 // Avoid!
+				}
+			}
+
+			totalScore := foodScore + spaceScore
+			foodMoves = append(foodMoves, FoodMove{move: move, score: totalScore})
+		}
+
+		// Find best food moves considering both distance and space
+		bestMoves := []string{}
+		bestFoodScore := -999999
+
+		for _, fm := range foodMoves {
+			if fm.score > bestFoodScore {
+				bestFoodScore = fm.score
+				bestMoves = []string{fm.move}
+			} else if fm.score == bestFoodScore {
+				bestMoves = append(bestMoves, fm.move)
 			}
 		}
 
@@ -381,6 +517,13 @@ func move(state GameState) BattlesnakeMoveResponse {
 		myLength := state.You.Length
 		myTail := state.You.Body[len(state.You.Body)-1]
 
+		// Check if we're in endgame (1v1)
+		isEndgame := len(opponents) == 1
+		var endgameOpponent Battlesnake
+		if isEndgame && len(opponents) > 0 {
+			endgameOpponent = opponents[0]
+		}
+
 		// Score each safe move based on aggression
 		type ScoredMove struct {
 			move  string
@@ -388,21 +531,85 @@ func move(state GameState) BattlesnakeMoveResponse {
 		}
 		scoredMoves := []ScoredMove{}
 
+		// Get all snakes for flood fill
+		allSnakes := state.Board.Snakes
+
 		for _, move := range safeMoves {
 			nextPos := getCoordFromMove(myHead, move)
 			aggressionScore := scoreAggressiveMove(nextPos, myLength, opponents, myTail, food, boardWidth, boardHeight)
-			scoredMoves = append(scoredMoves, ScoredMove{move: move, score: aggressionScore})
+
+			// Endgame bonus: In 1v1, heavily favor controlling more space
+			endgameBonus := 0
+			if isEndgame {
+				mySpace := floodFill(nextPos, boardWidth, boardHeight, allSnakes)
+				enemySpace := floodFill(endgameOpponent.Head, boardWidth, boardHeight, allSnakes)
+
+				// If we control more space, big bonus!
+				if mySpace > enemySpace {
+					endgameBonus = 75 // Dominate space control
+				} else if mySpace == enemySpace {
+					endgameBonus = 25 // Equal footing
+				} else {
+					endgameBonus = -25 // Losing space battle
+				}
+
+				// If we're longer and enemy is low on health, be ultra aggressive
+				if myLength > endgameOpponent.Length && endgameOpponent.Health < 40 {
+					// Cut them off from food!
+					if len(food) > 0 {
+						nearestFoodToEnemy := food[0]
+						minDist := manhattanDistance(endgameOpponent.Head, food[0])
+						for _, f := range food {
+							dist := manhattanDistance(endgameOpponent.Head, f)
+							if dist < minDist {
+								minDist = dist
+								nearestFoodToEnemy = f
+							}
+						}
+
+						distToFood := manhattanDistance(nextPos, nearestFoodToEnemy)
+						enemyDistToFood := manhattanDistance(endgameOpponent.Head, nearestFoodToEnemy)
+
+						if distToFood < enemyDistToFood {
+							endgameBonus += 50 // Cut them off from food!
+						}
+					}
+				}
+			}
+
+			aggressionScore += endgameBonus
+
+			// Calculate available space using flood fill
+			spaceAvailable := floodFill(nextPos, boardWidth, boardHeight, allSnakes)
+
+			// Space is critical - heavily weight it
+			// Need at least our body length + buffer in available space
+			minSpaceNeeded := myLength + 5
+			spaceScore := 0
+
+			if spaceAvailable >= minSpaceNeeded*2 {
+				spaceScore = 100 // Plenty of space
+			} else if spaceAvailable >= minSpaceNeeded {
+				spaceScore = 50 // Adequate space
+			} else if spaceAvailable >= myLength {
+				spaceScore = -50 // Tight space - risky!
+			} else {
+				spaceScore = -200 // Death trap - avoid!
+			}
+
+			totalScore := aggressionScore + spaceScore
+			scoredMoves = append(scoredMoves, ScoredMove{move: move, score: totalScore})
 		}
 
-		// Find moves with highest aggression score
+		// Find moves with highest total score (aggression + space)
 		bestMoves := []string{}
-		bestAggressionScore := -999999
+		bestTotalScore := -999999
 
 		for _, sm := range scoredMoves {
-			if sm.score > bestAggressionScore {
-				bestAggressionScore = sm.score
+			if sm.score > bestTotalScore {
+				bestTotalScore = sm.score
 				bestMoves = []string{sm.move}
-			} else if sm.score == bestAggressionScore {
+			} else if sm.score == bestTotalScore {
 				bestMoves = append(bestMoves, sm.move)
 			}
 		}
